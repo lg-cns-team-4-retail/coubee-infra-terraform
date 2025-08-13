@@ -9,6 +9,51 @@ terraform {
   }
 }
 
+resource "aws_instance" "jenkins" {
+  ami                         = var.ami_id 
+  instance_type               = var.jenkins_instance_type
+  subnet_id                   = aws_subnet.public1.id
+  vpc_security_group_ids      = [aws_security_group.jenkins_sg.id]
+  key_name                    = var.key_name   
+  associate_public_ip_address = true
+
+  root_block_device {
+    volume_size           = 10
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
+
+  tags = {
+    Name = "${var.project_name}_jenkins"
+  }
+
+    user_data = <<EOF
+#!/bin/bash
+set -e
+
+# Jenkins 디렉토리 준비
+mkdir -p /home/ubuntu/jenkins/jenkins_home
+chown ubuntu:ubuntu /home/ubuntu/jenkins
+
+# docker-compose.yml 파일 복원
+echo "${filebase64("${path.module}/jenkins/docker-compose.yaml")}" | base64 -d > /home/ubuntu/jenkins/docker-compose.yml
+echo "${filebase64("${path.module}/jenkins/Dockerfile")}" | base64 -d > /home/ubuntu/jenkins/Dockerfile
+
+# 권한 설정
+chown -R ubuntu:ubuntu /home/ubuntu/jenkins
+chmod -R 644 /home/ubuntu/jenkins/*
+
+# Docker 설치
+apt-get update
+apt-get install -y docker.io docker-compose
+
+# Jenkins 빌드 및 실행
+cd /home/ubuntu/jenkins
+docker-compose up -d
+EOF
+
+}
+
 # bastion EC2
 resource "aws_instance" "bastion" {
   ami                         = var.ami_id 
@@ -258,3 +303,26 @@ resource "aws_eks_node_group" "eks_node_group" {
   ]
 }
 
+resource "aws_ecr_repository" "gateway" {
+  name = "coubee-be-gateway"
+}
+
+resource "aws_ecr_repository" "user" {
+  name = "coubee-be-user"
+}
+
+resource "aws_ecr_repository" "product" {
+  name = "coubee-be-product"
+}
+
+resource "aws_ecr_repository" "store" {
+  name = "coubee-be-store"
+}
+
+resource "aws_ecr_repository" "notification" {
+  name = "coubee-be-notification"
+}
+
+resource "aws_ecr_repository" "order" {
+  name = "coubee-be-order"
+}

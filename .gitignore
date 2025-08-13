@@ -28,6 +28,9 @@ Thumbs.db
 .idea/
 *.swp
 
+# Lambda 함수 배포 패키지
+*.zip
+
 
 
 
