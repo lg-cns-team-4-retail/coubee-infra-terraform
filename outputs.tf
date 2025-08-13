@@ -1,3 +1,13 @@
+output "jenkins_public_ip" {
+  value       = aws_instance.jenkins.public_ip
+  description = "Jenkins EC2 퍼블릭 IP"
+}
+
+output "jenkins_instance_id" {
+  value       = aws_instance.jenkins.id
+  description = "Jenkins EC2 인스턴스 ID"
+}
+
 output "bastion_public_ip" {
   value       = aws_instance.bastion.public_ip
   description = "Bastion EC2 퍼블릭 IP"
