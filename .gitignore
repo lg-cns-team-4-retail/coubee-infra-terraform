@@ -1,0 +1,35 @@
+# .terraform 디렉터리 (Terraform 플러그인 및 모듈 캐시)
+.terraform/
+
+# 키페어 파일 (프라이빗 키)
+*.pem
+
+# Terraform 상태 파일 및 잠금 파일
+*.tfstate
+*.tfstate.*
+
+# Terraform 변수 파일 (비밀 값 포함 가능)
+*.tfvars
+*.tfvars.json
+
+# 백업 파일
+*.backup
+*.bak
+
+# 로컬 환경 파일
+terraform.tfvars.local
+
+# OS별 불필요 파일
+.DS_Store
+Thumbs.db
+
+# 에디터 관련 파일 (필요시 추가)
+.vscode/
+.idea/
+*.swp
+
+
+
+
+
+
