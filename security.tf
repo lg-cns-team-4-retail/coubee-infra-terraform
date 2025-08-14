@@ -55,6 +55,13 @@ resource "aws_security_group" "bastion_sg" {
   vpc_id      = aws_vpc.coubee.id
 
   ingress {
+    from_port   = 6379
+    to_port     = 6379
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -334,4 +341,50 @@ resource "aws_security_group" "monitoring_sg" {
   tags = {
     Name = "monitoring_sg"
   }
+}
+
+resource "aws_security_group" "redis_test_sg" {
+  name        = "redis_test_sg"
+  description = "Allow Redis test from anywhere (per request) and all egress"
+  vpc_id      = aws_vpc.coubee.id
+
+  # 요청 사양: ingress 6379 from 0.0.0.0/0
+  ingress {
+    from_port   = 6379
+    to_port     = 6379
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # egress all (Lambda -> Redis outbound 허용)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "redis_test_sg" }
+}
+
+resource "aws_security_group" "ec2_sg" {
+  name        = "ec2_sg"
+  description = "Allow HTTPS to Interface VPC Endpoint"
+  vpc_id      = aws_vpc.coubee.id
+
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "ec2_sg" }
 }

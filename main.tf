@@ -69,11 +69,11 @@ resource "aws_instance" "bastion" {
     delete_on_termination = true   # 인스턴스 삭제 시 볼륨도 삭제
   }
   user_data = <<EOF
-    #!/bin/bash
-    echo "${filebase64("coubee-keypair.pem")}" | base64 -d > /home/ubuntu/private-key.pem
-    chmod 400 /home/ubuntu/private-key.pem
-    chown ubuntu:ubuntu /home/ubuntu/private-key.pem
-    EOF
+#!/bin/bash
+echo "${filebase64("coubee-keypair.pem")}" | base64 -d > /home/ubuntu/private-key.pem
+chmod 400 /home/ubuntu/private-key.pem
+chown ubuntu:ubuntu /home/ubuntu/private-key.pem
+EOF
   
 
   tags = {
@@ -100,7 +100,7 @@ resource "aws_instance" "kafka" {
   user_data = file("install-kafka.sh")
 
   depends_on = [                                 #네트워크 설정이 먼저 되어있어야 private망에 있는 ec2접근이 가능해져서 kafka 설치됨
-    aws_nat_gateway.nat,
+    aws_nat_gateway.nat_a,
     aws_route_table_association.private1_assoc
   ]
 
@@ -132,6 +132,26 @@ resource "aws_iam_role_policy_attachment" "lambda_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
+# Lambda가 VPC ENI를 붙일 수 있도록
+resource "aws_iam_role_policy_attachment" "lambda_vpc_access" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+# 1) elsaticache endpoint Parameter 생성/갱신
+resource "aws_ssm_parameter" "valkey_endpoint" {
+  name  = "/coubee/valkey/primary_endpoint"
+  type  = "String"
+  value = aws_elasticache_replication_group.valkey.primary_endpoint_address
+}
+
+# 2) Lambda가 SSM 읽도록 IAM 권한 부여
+resource "aws_iam_role_policy_attachment" "lambda_ssm_read" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess"
+}
+
+
 # Lambda Function
 resource "aws_lambda_function" "notification_lambda" {
   function_name = "handleNotificationEvent"
@@ -141,6 +161,25 @@ resource "aws_lambda_function" "notification_lambda" {
 
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+
+  # vpc 연결 (private1)
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id]
+    security_group_ids = [aws_security_group.redis_test_sg.id]
+  }
+
+  # 환경변수
+  environment {
+    variables = {
+      VALKEY_HOST = aws_ssm_parameter.valkey_endpoint.value
+      VALKEY_PORT = "6379"
+    }
+  }
+
+  # VPC 권한 부여 후 적용 순서 보장
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_vpc_access
+  ]
 }
 
 # Archive Python code
@@ -174,6 +213,7 @@ resource "aws_cloudwatch_event_target" "lambda_target" {
   arn       = aws_lambda_function.notification_lambda.arn
 }
 
+
 # Permission for EventBridge to invoke Lambda
 resource "aws_lambda_permission" "allow_eventbridge" {
   statement_id  = "AllowExecutionFromEventBridge"
@@ -205,6 +245,27 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSClusterPolicy" {
   role       = aws_iam_role.eks_cluster_role.name
 }
 
+# EKS Cluster Role에 추가로 붙일 관리형 정책들
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSBlockStoragePolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSBlockStoragePolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSComputePolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSComputePolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSLoadBalancingPolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSLoadBalancingPolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSNetworkingPolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSNetworkingPolicy"
+  role       = aws_iam_role.eks_cluster_role.name
+}
+
 # EKS Cluster
 resource "aws_eks_cluster" "eks_cluster" {
   name     = "${var.project_name}_eks_cluster"
@@ -212,15 +273,39 @@ resource "aws_eks_cluster" "eks_cluster" {
   version  = "1.33"
 
   vpc_config {
-    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private3.id] 
+    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id] 
     security_group_ids = [aws_security_group.eks_cluster_sg.id]
   }
 
   depends_on = [
-    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy,
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSBlockStoragePolicy,
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSComputePolicy,
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSLoadBalancingPolicy,
+    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSNetworkingPolicy
   ]
 }
 
+# (선택) 현재 리전/계정 정보
+data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}
+
+# EKS Node Role에 Inline Policy 추가 (EventBridge PutEvents)
+resource "aws_iam_role_policy" "eks_node_put_events_inline" {
+  name = "eks-node-put-events-inline"
+  role = aws_iam_role.eks_node_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = "events:PutEvents",
+        Resource = "arn:aws:events:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:event-bus/notification_bus"
+      }
+    ]
+  })
+}
 
 # EKS IAM Role (Node Group)
 resource "aws_iam_role" "eks_node_role" {
@@ -239,18 +324,21 @@ resource "aws_iam_role" "eks_node_role" {
 }
 
 
-resource "aws_iam_role_policy_attachment" "eks_worker_node_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+# 최소 권한 노드 정책 (기존 AmazonEKSWorkerNodePolicy → 대체)
+resource "aws_iam_role_policy_attachment" "eks_worker_node_minimal_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodeMinimalPolicy"
   role       = aws_iam_role.eks_node_role.name
 }
 
+# CNI 정책은 유지
 resource "aws_iam_role_policy_attachment" "eks_worker_node_cni_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
   role       = aws_iam_role.eks_node_role.name
 }
 
-resource "aws_iam_role_policy_attachment" "eks_worker_node_registry_readonly_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+# ECR Pull 전용 (기존 ReadOnly → 대체)
+resource "aws_iam_role_policy_attachment" "eks_worker_node_ecr_pull_only" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
   role       = aws_iam_role.eks_node_role.name
 }
 
@@ -258,6 +346,7 @@ resource "aws_iam_role_policy_attachment" "eks_worker_node_registry_readonly_pol
 resource "aws_launch_template" "eks_node_lt" {
   name_prefix   = "${var.project_name}_eks_node_"
   instance_type = "t3a.medium"
+  key_name = var.key_name
 
   block_device_mappings {
     device_name = "/dev/xvda"
@@ -285,6 +374,8 @@ resource "aws_eks_node_group" "eks_node_group" {
   node_role_arn   = aws_iam_role.eks_node_role.arn
   subnet_ids      = [aws_subnet.private1.id]
 
+
+
   scaling_config {
     desired_size = 6
     max_size     = 6
@@ -297,9 +388,9 @@ resource "aws_eks_node_group" "eks_node_group" {
   }
 
   depends_on = [
-    aws_iam_role_policy_attachment.eks_worker_node_policy,
+    aws_iam_role_policy_attachment.eks_worker_node_minimal_policy,
     aws_iam_role_policy_attachment.eks_worker_node_cni_policy,
-    aws_iam_role_policy_attachment.eks_worker_node_registry_readonly_policy
+    aws_iam_role_policy_attachment.eks_worker_node_ecr_pull_only
   ]
 }
 
@@ -325,4 +416,47 @@ resource "aws_ecr_repository" "notification" {
 
 resource "aws_ecr_repository" "order" {
   name = "coubee-be-order"
+}
+
+
+########################################
+# Subnet Group (private2)
+########################################
+resource "aws_elasticache_subnet_group" "valkey_sng" {
+  name       = "valkey-private2-sng"
+  subnet_ids = [aws_subnet.private2.id]
+
+  tags = { Name = "valkey-private2-sng" }
+}
+
+########################################
+# Valkey 8.1 (단일 노드, replica 0, Multi-AZ 해제)
+########################################
+resource "aws_elasticache_replication_group" "valkey" {
+  replication_group_id = "coubee-valkey-rg"
+  description          = "Valkey cache for coubee"
+
+  engine               = "valkey"
+  engine_version       = "8.1"
+  node_type            = "cache.t3.micro"
+  port                 = 6379
+  parameter_group_name = "default.valkey8"
+
+  # 클러스터 모드 해제 + 단일 프라이머리
+  num_node_groups         = 1
+  replicas_per_node_group = 0
+
+  # 멀티 AZ 비활성 (replica가 없으니 자동 장애조치도 비활성/생략)
+  multi_az_enabled = false
+  # automatic_failover_enabled = false  # 없어도 됨(복제본 없으면 의미 없음)
+
+  # 네트워킹
+  subnet_group_name  = aws_elasticache_subnet_group.valkey_sng.name
+  security_group_ids = [aws_security_group.redis_test_sg.id]
+
+  # 암호화 (요청: 전송암호화 사용X/보류)
+  transit_encryption_enabled = false
+  at_rest_encryption_enabled = false
+
+  tags = { Name = "coubee-valkey" }
 }

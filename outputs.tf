@@ -55,17 +55,17 @@ output "subnet_private2_id" {
 }
 
 output "nat_eip" {
-  value       = aws_eip.nat.public_ip
+  value       = aws_eip.nat_a.public_ip
   description = "Bastion EC2 퍼블릭 IP"
 }
 
 output "nat_gateway_id" {
-  value       = aws_nat_gateway.nat.id
+  value       = aws_nat_gateway.nat_a.id
   description = "NAT Gateway ID"
 }
 
 output "igw_id" {
-  value       = aws_internet_gateway.coubee.id
+  value       = aws_internet_gateway.igw.id
   description = "Internet Gateway ID"
 }
 
