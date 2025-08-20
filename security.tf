@@ -207,21 +207,21 @@ resource "aws_security_group" "kafka_sg" {
     from_port   = 9092
     to_port     = 9092
     protocol    = "tcp"
-    self        = true
+    cidr_blocks = ["10.0.0.0/16"]
   }
 
   ingress {
     from_port   = 9093
     to_port     = 9093
     protocol    = "tcp"
-    self        = true
+    cidr_blocks = ["10.0.0.0/16"]
   }
 
   ingress {
     from_port   = 9094
     to_port     = 9094
     protocol    = "tcp"
-    self        = true
+    cidr_blocks = ["10.0.0.0/16"]
   }
 
   ingress {

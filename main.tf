@@ -266,25 +266,25 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_AmazonEKSNetworkingPolicy
   role       = aws_iam_role.eks_cluster_role.name
 }
 
-# EKS Cluster
-resource "aws_eks_cluster" "eks_cluster" {
-  name     = "${var.project_name}_eks_cluster"
-  role_arn = aws_iam_role.eks_cluster_role.arn
-  version  = "1.33"
+# # EKS Cluster
+# resource "aws_eks_cluster" "eks_cluster" {
+#   name     = "${var.project_name}_eks_cluster"
+#   role_arn = aws_iam_role.eks_cluster_role.arn
+#   version  = "1.33"
 
-  vpc_config {
-    subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id] 
-    security_group_ids = [aws_security_group.eks_cluster_sg.id]
-  }
+#   vpc_config {
+#     subnet_ids         = [aws_subnet.private1.id, aws_subnet.private2.id] 
+#     security_group_ids = [aws_security_group.eks_cluster_sg.id]
+#   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy,
-    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSBlockStoragePolicy,
-    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSComputePolicy,
-    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSLoadBalancingPolicy,
-    aws_iam_role_policy_attachment.eks_cluster_AmazonEKSNetworkingPolicy
-  ]
-}
+#   depends_on = [
+#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSClusterPolicy,
+#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSBlockStoragePolicy,
+#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSComputePolicy,
+#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSLoadBalancingPolicy,
+#     aws_iam_role_policy_attachment.eks_cluster_AmazonEKSNetworkingPolicy
+#   ]
+# }
 
 # (선택) 현재 리전/계정 정보
 data "aws_region" "current" {}
@@ -342,60 +342,61 @@ resource "aws_iam_role_policy_attachment" "eks_worker_node_ecr_pull_only" {
   role       = aws_iam_role.eks_node_role.name
 }
 
-# Launch Template for Node Group
-resource "aws_launch_template" "eks_node_lt" {
-  name_prefix   = "${var.project_name}_eks_node_"
-  instance_type = "t3a.medium"
-  key_name = var.key_name
+# # Launch Template for Node Group
+# resource "aws_launch_template" "eks_node_lt" {
+#   name_prefix   = "${var.project_name}_eks_node_"
+#   instance_type = "t3a.medium"
+#   key_name = var.key_name
 
-  block_device_mappings {
-    device_name = "/dev/xvda"
-    ebs {
-      volume_size           = 20
-      volume_type           = "gp3"
-      delete_on_termination = true
-    }
-  }
+#   block_device_mappings {
+#     device_name = "/dev/xvda"
+#     ebs {
+#       volume_size           = 20
+#       volume_type           = "gp3"
+#       delete_on_termination = true
+#     }
+#   }
 
-  vpc_security_group_ids = [aws_security_group.eks_node_sg.id]
+#   vpc_security_group_ids = [aws_security_group.eks_node_sg.id]
 
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name = "${var.project_name}_eks_node"
-    }
-  }
-}
+#   tag_specifications {
+#     resource_type = "instance"
+#     tags = {
+#       Name = "${var.project_name}_eks_node"
+#     }
+#   }
+# }
 
-# Node Group
-resource "aws_eks_node_group" "eks_node_group" {
-  cluster_name    = aws_eks_cluster.eks_cluster.name
-  node_group_name = "${var.project_name}_eks_node_group"
-  node_role_arn   = aws_iam_role.eks_node_role.arn
-  subnet_ids      = [aws_subnet.private1.id]
+# # Node Group
+# resource "aws_eks_node_group" "eks_node_group" {
+#   cluster_name    = aws_eks_cluster.eks_cluster.name
+#   node_group_name = "${var.project_name}_eks_node_group"
+#   node_role_arn   = aws_iam_role.eks_node_role.arn
+#   subnet_ids      = [aws_subnet.private1.id]
 
 
 
-  scaling_config {
-    desired_size = 6
-    max_size     = 6
-    min_size     = 6
-  }
+#   scaling_config {
+#     desired_size = 6
+#     max_size     = 6
+#     min_size     = 6
+#   }
 
-  launch_template {
-    id      = aws_launch_template.eks_node_lt.id
-    version = "$Latest"
-  }
+#   launch_template {
+#     id      = aws_launch_template.eks_node_lt.id
+#     version = "$Latest"
+#   }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.eks_worker_node_minimal_policy,
-    aws_iam_role_policy_attachment.eks_worker_node_cni_policy,
-    aws_iam_role_policy_attachment.eks_worker_node_ecr_pull_only
-  ]
-}
+#   depends_on = [
+#     aws_iam_role_policy_attachment.eks_worker_node_minimal_policy,
+#     aws_iam_role_policy_attachment.eks_worker_node_cni_policy,
+#     aws_iam_role_policy_attachment.eks_worker_node_ecr_pull_only
+#   ]
+# }
 
 resource "aws_ecr_repository" "gateway" {
   name = "coubee-be-gateway"
+  force_delete = true
 }
 
 resource "aws_ecr_repository" "user" {
@@ -459,4 +460,46 @@ resource "aws_elasticache_replication_group" "valkey" {
   at_rest_encryption_enabled = false
 
   tags = { Name = "coubee-valkey" }
+}
+
+
+#RDS
+
+resource "aws_db_subnet_group" "rds" {
+  name        = "coubee-rds-subnet"
+  description = "Subnet group for RDS"
+  subnet_ids  = [
+    aws_subnet.private1.id,
+    aws_subnet.private2.id
+  ]
+}
+
+resource "aws_db_instance" "postgres" {
+  identifier = "coubee-postgres"
+  engine = "postgres"
+  instance_class = var.db_instance_type
+
+  allocated_storage = 20
+  storage_type = "gp3"
+
+  db_subnet_group_name = aws_db_subnet_group.rds.name
+  vpc_security_group_ids = [aws_security_group.rds_sg.id]
+  publicly_accessible = false
+  availability_zone = "ap-northeast-2b"
+  port = 5432
+
+  username = var.db_username
+  password = var.db_password
+
+  multi_az = false
+
+  #운영 편의 설정
+  skip_final_snapshot = true
+  deletion_protection = false
+  apply_immediately = true
+
+  tags = {
+    Name = "coubee-postgres"
+    Project = "coubee"
+  }
 }

@@ -63,7 +63,7 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper1:2181,zookeeper2:2181,zookeeper3:2181"
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1-8d51dc2c375512d9.elb.ap-northeast-2.amazonaws.com:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
 
   kafka2:
@@ -74,7 +74,7 @@ services:
     environment:
       KAFKA_BROKER_ID: 2
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper1:2181,zookeeper2:2181,zookeeper3:2181"
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka2:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1-8d51dc2c375512d9.elb.ap-northeast-2.amazonaws.com:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
 
   kafka3:
@@ -85,7 +85,7 @@ services:
     environment:
       KAFKA_BROKER_ID: 3
       KAFKA_ZOOKEEPER_CONNECT: "zookeeper1:2181,zookeeper2:2181,zookeeper3:2181"
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka3:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka1-8d51dc2c375512d9.elb.ap-northeast-2.amazonaws.com:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
 
   kafdrop:
@@ -94,7 +94,7 @@ services:
     ports:
       - "9000:9000"
     environment:
-      KAFKA_BROKERCONNECT: "kafka1:9092,kafka2:9092,kafka3:9092"
+      KAFKA_BROKERCONNECT: "kafka1-8d51dc2c375512d9.elb.ap-northeast-2.amazonaws.com:9092"
     depends_on:
       - kafka1
       - kafka2

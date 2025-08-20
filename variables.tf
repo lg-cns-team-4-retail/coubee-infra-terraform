@@ -58,5 +58,17 @@ variable "kafka_instance_type" {
 variable "jenkins_instance_type" {
   description = "Jenkins 용 EC2 인스턴스 타입"
   type        = string
-  default     = "t3a.medium"
+}
+
+variable "db_username" {
+  type = string
+}
+
+variable "db_password" {
+  type = string
+  sensitive = true
+}
+
+variable "db_instance_type" {
+  type = string
 }
