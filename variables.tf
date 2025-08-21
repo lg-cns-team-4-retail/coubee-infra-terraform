@@ -72,3 +72,80 @@ variable "db_password" {
 variable "db_instance_type" {
   type = string
 }
+
+variable "elk_instance_type" {
+  type = string
+}
+
+variable "expo_access_token" {
+  description = "Expo push notification access token"
+  type = string
+  sensitive = true
+}
+
+
+# Lambda 설정
+variable "lambda_timeout_dispatcher" {
+  description = "Timeout for dispatcher Lambda function (seconds)"
+  type        = number
+  default     = 60
+}
+
+variable "lambda_timeout_worker" {
+  description = "Timeout for worker Lambda function (seconds)"
+  type        = number
+  default     = 900
+}
+
+variable "lambda_memory_dispatcher" {
+  description = "Memory for dispatcher Lambda function (MB)"
+  type        = number
+  default     = 512
+}
+
+variable "lambda_memory_worker" {
+  description = "Memory for worker Lambda function (MB)"
+  type        = number
+  default     = 1024
+}
+
+#personalize-lambda
+variable "lambda_timeout_personalize" {
+  description = "Timeout for personalize lambda"
+  type = number
+}
+
+variable "lambda_memory_personalize" {
+  description = "Memory for personalize lambda"
+  type = number
+}
+
+variable "bucket_name" {
+  description = "personalize lambda bucket name"
+  type = string
+}
+
+variable "interaction_url" {
+  description = "personazlie lambda interaction url"
+  type = string
+}
+
+variable "user_url" {
+  description = "personalize lambda user url"
+  type = string
+}
+
+variable "db_host" {
+  description = "personalize lambda db host"
+  type = string
+}
+
+variable "db_port" {
+  description = "psersonalize lambda db port"
+  type = number
+}
+
+variable "db_user" {
+  description = "personalizei lambda db user"
+  type = string
+}

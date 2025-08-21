@@ -112,7 +112,7 @@ resource "aws_instance" "kafka" {
 
 # IAM Role for Lambda
 resource "aws_iam_role" "lambda_exec" {
-  name = "lambda_execution_role"
+  name = "${var.project_name}-notification-lambda-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -138,11 +138,92 @@ resource "aws_iam_role_policy_attachment" "lambda_vpc_access" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_personalize" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonPersonalizeFullAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_s3" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+}
+
+# custom role
+resource "aws_iam_role_policy" "lambda_notification_policy" {
+  name = "${var.project_name}-notification-lambda-policy"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction"
+        ]
+        Resource = [
+          "arn:aws:lambda:*:*:function:${var.project_name}-notification-*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sns:Publish"
+        ]
+        Resource = [
+          aws_sns_topic.dlq_alerts.arn
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = [
+          "arn:aws:ssm:*:*:parameter/${var.project_name}/notification/*"
+        ]
+      }
+    ]
+  })
+}
+
 # 1) elsaticache endpoint Parameter 생성/갱신
 resource "aws_ssm_parameter" "valkey_endpoint" {
-  name  = "/coubee/valkey/primary_endpoint"
+  name  = "/${var.project_name}/notification/valkey/endpoint"
   type  = "String"
   value = aws_elasticache_replication_group.valkey.primary_endpoint_address
+}
+
+resource "aws_ssm_parameter" "expo_access_token" {
+  name = "/${var.project_name}/notification/expo/access_token"
+  type = "SecureString"
+  value = var.expo_access_token
+}
+
+# SNS Topic for DLQ Alerts
+resource "aws_sns_topic" "dlq_alerts" {
+  name = "${var.project_name}-notification-dlq-alerts"
+}
+
+# Lambda Layer and package data sources
+data "local_file" "dependencies_layer_zip" {
+  filename = "${path.module}/lambda/notification-lambda/dependencies-layer.zip"
+}
+
+data "local_file" "dispatcher_slim_zip" {
+  filename = "${path.module}/lambda/notification-lambda/notification-dispatcher-slim.zip"
+}
+
+data "local_file" "worker_slim_zip" {
+  filename = "${path.module}/lambda/notification-lambda/notification-worker-slim.zip"
 }
 
 # 2) Lambda가 SSM 읽도록 IAM 권한 부여
@@ -152,35 +233,127 @@ resource "aws_iam_role_policy_attachment" "lambda_ssm_read" {
 }
 
 
-# Lambda Function
-resource "aws_lambda_function" "notification_lambda" {
-  function_name = "handleNotificationEvent"
-  runtime       = "python3.12"
-  role          = aws_iam_role.lambda_exec.arn
-  handler       = "lambda_function.lambda_handler"
+# Lambda Layer for shared dependencies
+resource "aws_lambda_layer_version" "dependencies" {
+  layer_name          = "${var.project_name}-notification-dependencies"
+  description         = "Shared dependencies for notification system"
+  
+  filename            = data.local_file.dependencies_layer_zip.filename
+  source_code_hash    = data.local_file.dependencies_layer_zip.content_base64sha256
+  
+  compatible_runtimes = ["python3.12"]
+  
+  lifecycle {
+    create_before_destroy = true
+  }
+  
+}
 
-  filename         = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+# Dispatcher Lambda Function (Layer-based)
+resource "aws_lambda_function" "dispatcher" {
+  function_name = "${var.project_name}-notification-dispatcher"
+  role          = aws_iam_role.lambda_exec.arn
+  
+  runtime = "python3.12"
+  handler = "dispatcher.lambda_handler"
+  timeout = var.lambda_timeout_dispatcher
+  memory_size = var.lambda_memory_dispatcher
+  
+  filename         = data.local_file.dispatcher_slim_zip.filename
+  source_code_hash = data.local_file.dispatcher_slim_zip.content_base64sha256
+
+  # Lambda Layer 연결
+  layers = [aws_lambda_layer_version.dependencies.arn]
 
   # vpc 연결 (private1)
   vpc_config {
     subnet_ids         = [aws_subnet.private1.id]
-    security_group_ids = [aws_security_group.redis_test_sg.id]
+    security_group_ids = [aws_security_group.lambda_sg.id]
   }
 
-  # 환경변수
   environment {
     variables = {
-      VALKEY_HOST = aws_ssm_parameter.valkey_endpoint.value
-      VALKEY_PORT = "6379"
+      VALKEY_HOST             = aws_ssm_parameter.valkey_endpoint.value
+      VALKEY_PORT             = "6379"
+      WORKER_FUNCTION_NAME    = "${var.project_name}-notification-worker"
+      ERROR_ALERT_TOPIC_ARN   = aws_sns_topic.dlq_alerts.arn
+      EXPO_ACCESS_TOKEN       = var.expo_access_token
     }
   }
 
-  # VPC 권한 부여 후 적용 순서 보장
   depends_on = [
-    aws_iam_role_policy_attachment.lambda_vpc_access
+    aws_iam_role_policy_attachment.lambda_vpc_access,
+    aws_cloudwatch_log_group.dispatcher_logs,
+    aws_lambda_layer_version.dependencies
   ]
+
+  tags = {
+    Name = "lambda-dispatcher"
+  }
 }
+
+# Worker Lambda Function (Layer-based)
+resource "aws_lambda_function" "worker" {
+  function_name = "${var.project_name}-notification-worker"
+  role          = aws_iam_role.lambda_exec.arn
+  
+  runtime = "python3.12"
+  handler = "worker.lambda_handler"
+  timeout = var.lambda_timeout_worker
+  memory_size = var.lambda_memory_worker
+  
+  filename         = data.local_file.worker_slim_zip.filename
+  source_code_hash = data.local_file.worker_slim_zip.content_base64sha256
+
+  # Lambda Layer 연결
+  layers = [aws_lambda_layer_version.dependencies.arn]
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id]
+    security_group_ids = [aws_security_group.lambda_sg.id]
+  }
+
+  environment {
+    variables = {
+      VALKEY_HOST             = aws_elasticache_replication_group.valkey.primary_endpoint_address
+      VALKEY_PORT             = "6379"
+      ERROR_ALERT_TOPIC_ARN   = aws_sns_topic.dlq_alerts.arn
+      EXPO_ACCESS_TOKEN       = var.expo_access_token
+    }
+  }
+
+  reserved_concurrent_executions = 5
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_vpc_access,
+    aws_cloudwatch_log_group.worker_logs,
+    aws_lambda_layer_version.dependencies
+  ]
+
+  tags = {
+    Name = "lambda_worker"
+  }
+}
+
+# CloudWatch Log Groups
+resource "aws_cloudwatch_log_group" "dispatcher_logs" {
+  name              = "/aws/lambda/${var.project_name}-notification-dispatcher"
+  retention_in_days = 14
+
+  tags = {
+    Name = "dispatcher-log"
+  }
+}
+
+resource "aws_cloudwatch_log_group" "worker_logs" {
+  name              = "/aws/lambda/${var.project_name}-notification-worker"
+  retention_in_days = 14
+
+  tags = {
+    Name = "worker-log"
+  }
+}
+
 
 # Archive Python code
 data "archive_file" "lambda_zip" {
@@ -195,7 +368,7 @@ resource "aws_cloudwatch_event_bus" "notification_bus" {
 }
 
 # EventBridge Rule
-resource "aws_cloudwatch_event_rule" "notification_send_rule" {
+resource "aws_cloudwatch_event_rule" "order_status_rule" {
   name           = "notification_send_rule"
   event_bus_name = aws_cloudwatch_event_bus.notification_bus.name
 
@@ -205,22 +378,262 @@ resource "aws_cloudwatch_event_rule" "notification_send_rule" {
   })
 }
 
-# EventBridge Target: Lambda
-resource "aws_cloudwatch_event_target" "lambda_target" {
-  rule      = aws_cloudwatch_event_rule.notification_send_rule.name
+# EventBridge Target: Dispatcher Lambda
+resource "aws_cloudwatch_event_target" "dispatcher_target" {
+  rule           = aws_cloudwatch_event_rule.order_status_rule.name
   event_bus_name = aws_cloudwatch_event_bus.notification_bus.name
-  target_id = "lambda"
-  arn       = aws_lambda_function.notification_lambda.arn
+  target_id      = "DispatcherLambda"
+  arn            = aws_lambda_function.dispatcher.arn
 }
 
 
-# Permission for EventBridge to invoke Lambda
-resource "aws_lambda_permission" "allow_eventbridge" {
+
+# Permission for EventBridge to invoke Dispatcher Lambda
+resource "aws_lambda_permission" "allow_eventbridge_dispatcher" {
   statement_id  = "AllowExecutionFromEventBridge"
   action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.notification_lambda.function_name
+  function_name = aws_lambda_function.dispatcher.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.notification_send_rule.arn
+  source_arn    = aws_cloudwatch_event_rule.order_status_rule.arn
+}
+
+# CloudWatch Dashboard
+resource "aws_cloudwatch_dashboard" "notification_dashboard" {
+  dashboard_name = "${var.project_name}-notification-system"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+
+        properties = {
+          metrics = [
+            ["NotificationSystem/Dispatcher", "DispatcherSuccess"],
+            [".", "DispatcherError"],
+            ["NotificationSystem", "ImmediateSend"],
+            [".", "QueuedNotifications"]
+          ]
+          view    = "timeSeries"
+          stacked = false
+          region  = "ap-northeast-2"
+          title   = "Notification System Metrics"
+          period  = 300
+        }
+      },
+      {
+        type   = "log"
+        x      = 0
+        y      = 6
+        width  = 24
+        height = 6
+
+        properties = {
+          query   = "SOURCE '/aws/lambda/${var.project_name}-notification-dispatcher' | fields @timestamp, @message | sort @timestamp desc | limit 100"
+          region  = "ap-northeast-2"
+          title   = "Dispatcher Logs"
+        }
+      }
+    ]
+  })
+}
+
+# CloudWatch Alarms
+resource "aws_cloudwatch_metric_alarm" "dispatcher_errors" {
+  alarm_name          = "${var.project_name}-notification-dispatcher-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "5"
+  alarm_description   = "This metric monitors dispatcher lambda errors"
+  alarm_actions       = [aws_sns_topic.dlq_alerts.arn]
+
+  dimensions = {
+    FunctionName = aws_lambda_function.dispatcher.function_name
+  }
+
+  tags = {
+    Name = "dispatcher_errors"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "worker_errors" {
+  alarm_name          = "${var.project_name}-notification-worker-errors"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "Errors"
+  namespace           = "AWS/Lambda"
+  period              = "300"
+  statistic           = "Sum"
+  threshold           = "5"
+  alarm_description   = "This metric monitors worker lambda errors"
+  alarm_actions       = [aws_sns_topic.dlq_alerts.arn]
+
+  dimensions = {
+    FunctionName = aws_lambda_function.worker.function_name
+  }
+
+  tags = {
+    Name = "worker_errors"
+  }
+}
+
+
+# personalize lambda
+#lambda용 role
+resource "aws_iam_role" "lambda_personalize_exec" {
+  name = "lambda-personalize-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = {
+        Service = "lambda.amazonaws.com"
+      }
+    }]
+  })
+
+  tags = {
+    Name = "lambda_psersonalize_role"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_personalize_access" {
+  role       = aws_iam_role.lambda_personalize_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonPersonalizeFullAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_s3_access" {
+  role       = aws_iam_role.lambda_personalize_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+}
+
+resource "aws_iam_role_policy" "lambda_s3_import_logging" {
+  name = "S3ImportLoggingPolicy"
+  role = aws_iam_role.lambda_personalize_exec.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "logs:CreateLogGroup"
+        Resource = "arn:aws:logs:ap-northeast-2:370519913328:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          "arn:aws:logs:ap-northeast-2:370519913328:log-group:personalize/s3-import:*"
+        ]
+      }
+    ]
+  })
+}
+
+
+#personalize role
+resource "aws_iam_role" "personalize_exec" {
+  name = "PersonalizeExecutionRole"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Allow",
+        Principal = {
+          Service = "personalize.amazonaws.com"
+        },
+        Action    = "sts:AssumeRole"
+      }
+    ]
+  })
+  tags = {
+    Name = "PersonalizeExecutionRole"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "personalize_full_access" {
+  role       = aws_iam_role.personalize_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonPersonalizeFullAccess"
+}
+
+resource "aws_iam_role_policy" "personalize_s3_access" {
+  name = "PersonalizeS3BucketAccessPolicy"
+  role = aws_iam_role.personalize_exec.name
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action   = ["s3:ListBucket"],
+        Effect   = "Allow",
+        Resource = ["arn:aws:s3:::${var.bucket_name}"]
+      },
+      {
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        Effect   = "Allow",
+        Resource = ["arn:aws:s3:::${var.bucket_name}/*"]
+      }
+    ]
+  })
+}
+
+# # lambda layer 및 dispatch
+# data "local_file" "python_module_zip" {
+#   filename = "${path.module}/lambda/personalize-lambda/python.zip"
+# }
+
+resource "aws_lambda_layer_version" "python_module" {
+    layer_name = "python-module"
+    s3_bucket = var.bucket_name
+    s3_key = "python.zip"
+    compatible_runtimes = ["python3.11"]
+}
+
+# 람다 함수 dataset_import
+data "local_file" "dataset_import_zip" {
+  filename = "${path.module}/lambda/personalize-lambda/dataset_import.zip"
+}
+
+resource "aws_lambda_function" "dataset-import" {
+  function_name = "dataset_import"
+  role          = aws_iam_role.lambda_personalize_exec.arn
+  runtime = "python3.11"
+  handler = "lambda_function.lambda_handler"
+  timeout = var.lambda_timeout_personalize
+  memory_size = var.lambda_memory_personalize
+  filename = data.local_file.dataset_import_zip.filename
+  source_code_hash = data.local_file.dataset_import_zip.content_base64sha256
+  # Lambda Layer 연결
+  layers = [aws_lambda_layer_version.python_module.arn]
+  environment {
+    variables = {
+      ROLE_ARN = aws_iam_role.personalize_exec.arn
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.dataset_log_group,
+    aws_lambda_layer_version.python_module
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "dataset_log_group" {
+  name              = "/personalize/dataset_import"
+  retention_in_days = 14
 }
 
 
@@ -401,25 +814,43 @@ resource "aws_ecr_repository" "gateway" {
 
 resource "aws_ecr_repository" "user" {
   name = "coubee-be-user"
+  force_delete = true
 }
 
 resource "aws_ecr_repository" "product" {
   name = "coubee-be-product"
+  force_delete = true
 }
 
 resource "aws_ecr_repository" "store" {
   name = "coubee-be-store"
+  force_delete = true
 }
 
 resource "aws_ecr_repository" "notification" {
   name = "coubee-be-notification"
+  force_delete = true
 }
 
 resource "aws_ecr_repository" "order" {
   name = "coubee-be-order"
+  force_delete = true
 }
 
+resource "aws_ecr_repository" "elasticsearch" {
+  name = "coubee-infra-elasticsearch"
+  force_delete = true
+}
 
+resource "aws_ecr_repository" "logstash" {
+  name = "coubee-infra-logstash"
+  force_delete = true
+}
+
+resource "aws_ecr_repository" "kibana" {
+  name = "coubee-infra-kibana"
+  force_delete = true
+}
 ########################################
 # Subnet Group (private2)
 ########################################
@@ -453,7 +884,7 @@ resource "aws_elasticache_replication_group" "valkey" {
 
   # 네트워킹
   subnet_group_name  = aws_elasticache_subnet_group.valkey_sng.name
-  security_group_ids = [aws_security_group.redis_test_sg.id]
+  security_group_ids = [aws_security_group.lambda-valkey-sg.id]
 
   # 암호화 (요청: 전송암호화 사용X/보류)
   transit_encryption_enabled = false
@@ -464,7 +895,6 @@ resource "aws_elasticache_replication_group" "valkey" {
 
 
 #RDS
-
 resource "aws_db_subnet_group" "rds" {
   name        = "coubee-rds-subnet"
   description = "Subnet group for RDS"
@@ -501,5 +931,36 @@ resource "aws_db_instance" "postgres" {
   tags = {
     Name = "coubee-postgres"
     Project = "coubee"
+  }
+}
+
+
+#ELK EC2
+resource "aws_instance" "elk_ec2"{
+  ami = var.ami_id
+  instance_type = var.elk_instance_type
+  subnet_id = aws_subnet.private2.id
+  vpc_security_group_ids = [aws_security_group.elk_sg.id]
+  key_name = var.key_name
+
+  #EC2 초기설정 (cloud-init)
+  user_data = <<EOF
+#!/bin/bash
+set -euxo pipefail
+apt-get update -y
+apt-get install -y docker.io
+systemctl enable --now docker
+usermod -aG docker ubuntu
+
+# docker compose v2 설치 (경로 먼저 생성!)
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -L "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-$(uname -s)-$(uname -m)" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+EOF
+
+
+  tags = {
+    Name = "${var.project_name}_elk"
   }
 }

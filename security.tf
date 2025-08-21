@@ -273,7 +273,7 @@ resource "aws_security_group" "rds_sg" {
     from_port   = 5432
     to_port     = 5432
     protocol    = "tcp"
-    security_groups = [aws_security_group.eks_node_sg.id]
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
@@ -343,6 +343,48 @@ resource "aws_security_group" "monitoring_sg" {
   }
 }
 
+resource "aws_security_group" "lambda_sg" {
+  name = "lambd_sg"
+  description = "Security group for notification Lambda functions"
+  vpc_id = aws_vpc.coubee.id
+  
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "All outbound traffic"
+  }
+
+  tags = {
+    Name = "notification-lambda-sg"
+  }
+}
+
+resource "aws_security_group" "lambda-valkey-sg" {
+  name        = "lambda-valkey-sg"
+  description = "Allow Redis test from anywhere (per request) and all egress"
+  vpc_id      = aws_vpc.coubee.id
+
+  # 요청 사양: ingress 6379 from 0.0.0.0/0
+  ingress {
+    from_port   = 6379
+    to_port     = 6379
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # egress all (Lambda -> Redis outbound 허용)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "lambda-valkey-sg" }
+}
+
 resource "aws_security_group" "redis_test_sg" {
   name        = "redis_test_sg"
   description = "Allow Redis test from anywhere (per request) and all egress"
@@ -364,7 +406,7 @@ resource "aws_security_group" "redis_test_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "redis_test_sg" }
+  tags = { Name = "lambda-valkey-sg" }
 }
 
 resource "aws_security_group" "ec2_sg" {
@@ -387,4 +429,25 @@ resource "aws_security_group" "ec2_sg" {
   }
 
   tags = { Name = "ec2_sg" }
+}
+
+
+resource "aws_security_group" "elk_sg" {
+  name = "elk_sg"
+  description = "Allow SSH and Docker testing"
+  vpc_id = aws_vpc.coubee.id
+
+  ingress {
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
