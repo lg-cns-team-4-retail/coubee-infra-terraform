@@ -385,6 +385,28 @@ resource "aws_security_group" "lambda-valkey-sg" {
   tags = { Name = "lambda-valkey-sg" }
 }
 
+resource "aws_security_group" "python-ec2-sg" {
+  name        = "python-ec2-sg"
+  description = "python ec2 security group"
+  vpc_id      = aws_vpc.coubee.id
+
+  ingress {
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = { Name = "lambda-valkey-sg" }
+}
+
 resource "aws_security_group" "redis_test_sg" {
   name        = "redis_test_sg"
   description = "Allow Redis test from anywhere (per request) and all egress"

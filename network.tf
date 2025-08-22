@@ -32,6 +32,7 @@ resource "aws_subnet" "public1" {
   map_public_ip_on_launch = true
   tags = {
     Name = "coubee-subnet-public1-ap-northeast-2a"
+    "kubernetes.io/role/elb" = "1"
   }
 }
 
@@ -51,6 +52,7 @@ resource "aws_subnet" "public2" {
   map_public_ip_on_launch = true
   tags = {
     Name = "coubee-subnet-public2-ap-northeast-2b"
+    "kubernetes.io/role/elb" = "1"
   }
 }
 

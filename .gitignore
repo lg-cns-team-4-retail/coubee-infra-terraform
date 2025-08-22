@@ -31,7 +31,7 @@ Thumbs.db
 # Lambda 함수 배포 패키지
 *.zip
 
-
+*.json
 
 
 

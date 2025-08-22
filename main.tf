@@ -18,7 +18,7 @@ resource "aws_instance" "jenkins" {
   associate_public_ip_address = true
 
   root_block_device {
-    volume_size           = 10
+    volume_size           = 50
     volume_type           = "gp3"
     delete_on_termination = true
   }
@@ -106,6 +106,20 @@ resource "aws_instance" "kafka" {
 
   tags = {
     Name = "${var.project_name}_kafka"
+  }
+}
+
+# python EC2
+resource "aws_instance" "python_ec2" {
+  ami                         = var.ami_id
+  instance_type               = var.python_instance_type
+  subnet_id                   = aws_subnet.private2.id
+  vpc_security_group_ids      = [aws_security_group.python-ec2-sg.id]
+  key_name                    = var.key_name
+  associate_public_ip_address = false
+
+  tags = {
+    Name = "${var.project_name}_python"
   }
 }
 
@@ -278,6 +292,11 @@ resource "aws_lambda_function" "dispatcher" {
       WORKER_FUNCTION_NAME    = "${var.project_name}-notification-worker"
       ERROR_ALERT_TOPIC_ARN   = aws_sns_topic.dlq_alerts.arn
       EXPO_ACCESS_TOKEN       = var.expo_access_token
+      DB_HOST = aws_db_instance.postgres.endpoint
+      DB_NAME = var.db_name2
+      DB_PASSWORD = var.db_password
+      DB_USER = var.db_user
+      RDS_ENABLED=true
     }
   }
 
@@ -319,6 +338,11 @@ resource "aws_lambda_function" "worker" {
       VALKEY_PORT             = "6379"
       ERROR_ALERT_TOPIC_ARN   = aws_sns_topic.dlq_alerts.arn
       EXPO_ACCESS_TOKEN       = var.expo_access_token
+      DB_HOST = aws_db_instance.postgres.endpoint
+      DB_NAME = var.db_name2
+      DB_PASSWORD = var.db_password
+      DB_USER = var.db_user
+      RDS_ENABLED=true
     }
   }
 
@@ -511,11 +535,17 @@ resource "aws_iam_role_policy_attachment" "lambda_personalize_access" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonPersonalizeFullAccess"
 }
 
+resource "aws_iam_role_policy_attachment" "lambda_personalize_vpc" {
+  role       = aws_iam_role.lambda_personalize_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
 resource "aws_iam_role_policy_attachment" "lambda_s3_access" {
   role       = aws_iam_role.lambda_personalize_exec.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonS3FullAccess"
 }
 
+# S3 import logging
 resource "aws_iam_role_policy" "lambda_s3_import_logging" {
   name = "S3ImportLoggingPolicy"
   role = aws_iam_role.lambda_personalize_exec.name
@@ -542,6 +572,86 @@ resource "aws_iam_role_policy" "lambda_s3_import_logging" {
   })
 }
 
+#dataset-import-logging
+resource "aws_iam_role_policy" "dataset_import_logging" {
+  name = "dataset_import_logging"
+  role = aws_iam_role.lambda_personalize_exec.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "logs:CreateLogGroup"
+        Resource = "arn:aws:logs:ap-northeast-2:370519913328:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          "arn:aws:logs:ap-northeast-2:370519913328:log-group:/aws/lambda/dataset_import:*"
+        ]
+      }
+    ]
+  })
+}
+
+#solution_import로깅 role 추가
+resource "aws_iam_role_policy" "solution_import_logging" {
+  name = "solutionimportlogging"
+  role = aws_iam_role.lambda_personalize_exec.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "logs:CreateLogGroup"
+        Resource = "arn:aws:logs:ap-northeast-2:370519913328:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          "arn:aws:logs:ap-northeast-2:370519913328:log-group:/aws/lambda/solution_import:*"
+        ]
+      }
+    ]
+  })
+}
+
+#solution_import로깅 role 추가
+resource "aws_iam_role_policy" "batch_inference_import_logging" {
+  name = "solutionimportlogging"
+  role = aws_iam_role.lambda_personalize_exec.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "logs:CreateLogGroup"
+        Resource = "arn:aws:logs:ap-northeast-2:370519913328:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = [
+          "arn:aws:logs:ap-northeast-2:370519913328:log-group:/aws/lambda/batch_inference_import_import:*"
+        ]
+      }
+    ]
+  })
+}
 
 #personalize role
 resource "aws_iam_role" "personalize_exec" {
@@ -590,18 +700,58 @@ resource "aws_iam_role_policy" "personalize_s3_access" {
     ]
   })
 }
-
-# # lambda layer 및 dispatch
-# data "local_file" "python_module_zip" {
-#   filename = "${path.module}/lambda/personalize-lambda/python.zip"
-# }
-
 resource "aws_lambda_layer_version" "python_module" {
     layer_name = "python-module"
     s3_bucket = var.bucket_name
     s3_key = "python.zip"
     compatible_runtimes = ["python3.11"]
 }
+
+# 람다 함수 s3_import
+data "local_file" "s3_import_zip" {
+  filename = "${path.module}/lambda/personalize-lambda/s3_import.zip"
+}
+
+resource "aws_lambda_function" "s3_import" {
+  function_name = "s3_import"
+  role          = aws_iam_role.lambda_personalize_exec.arn
+  runtime = "python3.11"
+  handler = "lambda_function.lambda_handler"
+  timeout = var.lambda_timeout_personalize
+  memory_size = var.lambda_memory_personalize
+  filename = data.local_file.s3_import_zip.filename
+  source_code_hash = data.local_file.s3_import_zip.content_base64sha256
+  # Lambda Layer 연결
+  layers = [aws_lambda_layer_version.python_module.arn]
+  environment {
+    variables = {
+        BUCKET_NAME = var.bucket_name
+        DB_HOST = aws_db_instance.postgres.endpoint
+        DB_PASSWORD = var.db_password
+        DB_USER = var.db_user
+        INTERACTION_URL = "interaction"
+        USER_URL= "user"
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id,
+                            aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.rds_sg.id]
+  }
+  
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_vpc_access,
+    aws_cloudwatch_log_group.s3_log_group,
+    aws_lambda_layer_version.python_module
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "s3_log_group" {
+  name              = "/aws/lambda/s3_import"
+  retention_in_days = 14
+}
+
 
 # 람다 함수 dataset_import
 data "local_file" "dataset_import_zip" {
@@ -636,6 +786,129 @@ resource "aws_cloudwatch_log_group" "dataset_log_group" {
   retention_in_days = 14
 }
 
+#solution 람다함수
+data "local_file" "solution_import_zip" {
+  filename = "${path.module}/lambda/personalize-lambda/solution_import.zip"
+}
+
+# solution_import
+resource "aws_lambda_function" "solution_import" {
+  function_name = "solution_import"
+  role          = aws_iam_role.lambda_personalize_exec.arn
+  runtime = "python3.11"
+  handler = "lambda_function.lambda_handler"
+  timeout = var.lambda_timeout_personalize
+  memory_size = var.lambda_memory_personalize
+  filename = data.local_file.solution_import_zip.filename
+  source_code_hash = data.local_file.solution_import_zip.content_base64sha256
+  # Lambda Layer 연결
+  layers = [aws_lambda_layer_version.python_module.arn]
+
+  depends_on = [
+    aws_cloudwatch_log_group.solution_log_group,
+    aws_lambda_layer_version.python_module
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "solution_log_group" {
+  name              = "/aws/lambda/solution_import"
+  retention_in_days = 14
+}
+
+#batch_inference_import 람다함수
+data "local_file" "batch_inference_import_zip" {
+  filename = "${path.module}/lambda/personalize-lambda/batch_inference_import.zip"
+}
+
+# batch_inference_import
+resource "aws_lambda_function" "batch_inference_import" {
+  function_name = "batch_inference_import"
+  role          = aws_iam_role.lambda_personalize_exec.arn
+  runtime = "python3.11"
+  handler = "lambda_function.lambda_handler"
+  timeout = var.lambda_timeout_personalize
+  memory_size = var.lambda_memory_personalize
+  filename = data.local_file.batch_inference_import_zip.filename
+  source_code_hash = data.local_file.batch_inference_import_zip.content_base64sha256
+  # Lambda Layer 연결
+  layers = [aws_lambda_layer_version.python_module.arn]
+  environment {
+    variables = {
+        BUCKET_NAME = var.bucket_name
+        DB_HOST = aws_db_instance.postgres.endpoint
+        DB_NAME = "coubee_user"
+        DB_PASSWORD = var.db_password
+        DB_USER = var.db_user
+        OUT_JSON_S3 = "batch_result"
+        ROLE_ARN = aws_iam_role.personalize_exec.arn
+        USER_JSON_S3 = "user_input"
+    }
+  }
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.private1.id,
+                            aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.rds_sg.id]
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_vpc_access,
+    aws_cloudwatch_log_group.batch_inference_import_log_group,
+    aws_lambda_layer_version.python_module
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "batch_inference_import_log_group" {
+  name              = "/aws/lambda/batch_inference_import"
+  retention_in_days = 14
+}
+
+#load_server_clean 람다함수
+data "local_file" "load_server_clean_zip" {
+  filename = "${path.module}/lambda/personalize-lambda/load_server_clean_import.zip"
+}
+
+# load_server_clean
+resource "aws_lambda_function" "load_server_clean" {
+  function_name = "load_server_clean_import"
+  role          = aws_iam_role.lambda_personalize_exec.arn
+  runtime = "python3.11"
+  handler = "lambda_function.lambda_handler"
+  timeout = var.lambda_timeout_personalize
+  memory_size = var.lambda_memory_personalize
+  filename = data.local_file.load_server_clean_zip.filename
+  source_code_hash = data.local_file.load_server_clean_zip.content_base64sha256
+  # Lambda Layer 연결
+  layers = [aws_lambda_layer_version.python_module.arn]
+  environment {
+    variables = {
+      FILE_NAME =   "batch_result"
+      SCHEMA_NAME = "coubee_product"
+      BUCKET_NAME = var.bucket_name
+      DB_HOST = aws_db_instance.postgres.endpoint
+      DB_NAME = var.db_name
+      DB_PASSWORD = var.db_password
+      DB_USER = var.db_user
+    }
+  }
+
+    vpc_config {
+    subnet_ids         = [aws_subnet.private1.id,
+                            aws_subnet.private2.id]
+    security_group_ids = [aws_security_group.rds_sg.id]
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.lambda_vpc_access,
+    aws_cloudwatch_log_group.load_server_clean_log_group,
+    aws_lambda_layer_version.python_module
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "load_server_clean_log_group" {
+  name              = "/aws/lambda/load_server_cleant"
+  retention_in_days = 14
+}
 
 # EKS IAM Role (Cluster)
 resource "aws_iam_role" "eks_cluster_role" {
@@ -943,6 +1216,12 @@ resource "aws_instance" "elk_ec2"{
   vpc_security_group_ids = [aws_security_group.elk_sg.id]
   key_name = var.key_name
 
+  root_block_device {
+    volume_size = 30                # 디스크 용량 (GB)
+    volume_type = "gp3"            # 최신 SSD (gp3 권장)
+    delete_on_termination = true   # 인스턴스 삭제 시 볼륨도 삭제
+  }
+
   #EC2 초기설정 (cloud-init)
   user_data = <<EOF
 #!/bin/bash
@@ -963,4 +1242,155 @@ EOF
   tags = {
     Name = "${var.project_name}_elk"
   }
+}
+
+# Lambda 함수에 RDS 접근 권한 추가
+resource "aws_iam_role_policy" "lambda_rds_policy" {
+  count = var.enable_rds_logging ? 1 : 0
+  
+  name = "${var.project_name}-notification-lambda-rds-policy"
+  role = aws_iam_role.lambda_exec.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "rds-db:connect"
+        ]
+        Resource = [
+          "arn:aws:rds-db:*:*:dbuser:${var.rds_instance_identifier}/${var.rds_username}"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = [
+          "arn:aws:ssm:*:*:parameter/${var.project_name}/notification/rds/*"
+        ]
+      }
+    ]
+  })
+}
+
+
+#step_function용 role
+resource "aws_iam_role" "step_function_exec" {
+  name = "step_function_role"
+  # Principal(서비스 주체)을 Step Functions로 변경해야 합니다.
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = {
+        Service = "states.amazonaws.com"
+      }
+    }]
+  })
+  tags = {
+    Name = "step_function_role"
+  }
+}
+resource "aws_iam_role_policy_attachment" "step_function_personalize_access" {
+  role       = aws_iam_role.step_function_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonPersonalizeFullAccess"
+}
+resource "aws_iam_policy" "step_function_logs_policy" {
+  name        = "StepFunctionLogsPolicy"
+  description = "Allows Step Functions to manage CloudWatch log deliveries."
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "logs:CreateLogDelivery",
+          "logs:GetLogDelivery",
+          "logs:UpdateLogDelivery",
+          "logs:DeleteLogDelivery",
+          "logs:ListLogDeliveries",
+          "logs:PutResourcePolicy",
+          "logs:DescribeResourcePolicies",
+          "logs:DescribeLogGroups"
+        ],
+        Resource = "*"
+      }
+    ]
+  })
+}
+# 2-2. Lambda 함수 호출 정책
+resource "aws_iam_policy" "step_function_lambda_invoke_policy" {
+  name        = "StepFunctionLambdaInvokePolicy"
+  description = "Allows Step Functions to invoke specific Lambda functions."
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = "lambda:InvokeFunction",
+        Resource = [
+          "arn:aws:lambda:ap-northeast-2:${var.iam_id}:function:s3_import",
+          "arn:aws:lambda:ap-northeast-2:${var.iam_id}:function:dataset_import",
+          "arn:aws:lambda:ap-northeast-2:${var.iam_id}:function:solution_import",
+          "arn:aws:lambda:ap-northeast-2:${var.iam_id}:function:batch_inference_import",
+          "arn:aws:lambda:ap-northeast-2:${var.iam_id}:function:load_server_clean_import"
+        ]
+      }
+    ]
+  })
+}
+# 2-3. AWS X-Ray 접근 정책
+resource "aws_iam_policy" "step_function_xray_policy" {
+  name        = "StepFunctionXRayPolicy"
+  description = "Allows Step Functions to send trace data to X-Ray."
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = [
+          "xray:PutTraceSegments",
+          "xray:PutTelemetryRecords",
+          "xray:GetSamplingRules",
+          "xray:GetSamplingTargets"
+        ],
+        Resource = ["*"]
+      }
+    ]
+  })
+}
+# 3. 위에서 생성한 정책들을 Step Function 역할에 연결(attach)합니다.
+resource "aws_iam_role_policy_attachment" "sf_logs_attach" {
+  role       = aws_iam_role.step_function_exec.name
+  policy_arn = aws_iam_policy.step_function_logs_policy.arn
+}
+resource "aws_iam_role_policy_attachment" "sf_lambda_invoke_attach" {
+  role       = aws_iam_role.step_function_exec.name
+  policy_arn = aws_iam_policy.step_function_lambda_invoke_policy.arn
+}
+resource "aws_iam_role_policy_attachment" "sf_xray_attach" {
+  role       = aws_iam_role.step_function_exec.name
+  policy_arn = aws_iam_policy.step_function_xray_policy.arn
+}
+resource "aws_sfn_state_machine" "personalize_pipeline" {
+  name     = "PersonalizePipelineStateMachine" # 상태 머신의 이름
+  role_arn = aws_iam_role.step_function_exec.arn
+  # file() 함수를 사용해 외부 JSON 파일의 내용을 읽어와서 정의로 사용합니다.
+  definition = file("${path.module}/personalize_pipeline.json")
+  # 로깅 설정 (선택 사항이지만 디버깅에 매우 유용하므로 강력히 권장합니다.)
+  logging_configuration {
+    log_destination        = "${aws_cloudwatch_log_group.sfn_log_group.arn}:*"
+    include_execution_data = true
+    level                  = "ALL"
+  }
+}
+# Step Function 실행 로그를 저장할 CloudWatch Log Group
+resource "aws_cloudwatch_log_group" "sfn_log_group" {
+  name              = "/aws/vendedlogs/states/PersonalizePipelineLogs"
+  retention_in_days = 14 # 로그 보존 기간 (일)
 }

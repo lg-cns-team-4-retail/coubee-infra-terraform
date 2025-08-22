@@ -149,3 +149,52 @@ variable "db_user" {
   description = "personalizei lambda db user"
   type = string
 }
+
+variable "db_name" {
+  description = "rds db name"
+  type = string
+}
+
+# RDS 설정 변수들
+
+variable "enable_rds_logging" {
+  description = "Enable RDS logging for notification results"
+  type        = bool
+  default     = false
+}
+
+variable "rds_instance_identifier" {
+  description = "Existing RDS instance identifier for notification logging"
+  type        = string
+  default     = ""
+}
+
+variable "rds_database_name" {
+  description = "Database name for notification logging"
+  type        = string
+  default     = "notifications"
+}
+
+variable "rds_username" {
+  description = "RDS username"
+  type        = string
+  default     = "notification_user"
+}
+
+variable "rds_password_ssm_key" {
+  description = "SSM Parameter Store key for RDS password"
+  type        = string
+  default     = ""
+}
+
+variable "iam_id" {
+  type = string
+}
+
+variable "db_name2" {
+  type = string
+}
+
+variable "python_instance_type" {
+  type = string
+}
