@@ -135,10 +135,6 @@ variable "user_url" {
   type = string
 }
 
-variable "db_host" {
-  description = "personalize lambda db host"
-  type = string
-}
 
 variable "db_port" {
   description = "psersonalize lambda db port"

@@ -295,7 +295,7 @@ resource "aws_lambda_function" "load_server_clean" {
       SCHEMA_NAME = "coubee_product"
       BUCKET_NAME = var.bucket_name
       DB_HOST = aws_db_instance.postgres.endpoint
-      DB_NAME = var.db_name
+      DB_NAME = "coubee_product"
       DB_PASSWORD = var.db_password
       DB_USER = var.db_user
     }

@@ -37,3 +37,7 @@ Thumbs.db
 
 CLAUDE.md
 
+*.crt
+k8s-token.txt
+*.exe
+*.sh

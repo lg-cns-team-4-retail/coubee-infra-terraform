@@ -68,6 +68,10 @@ EOF
   tags = {
     Name = "${var.project_name}_bastion"
   }
+
+  depends_on = [
+    aws_db_instance.postgres
+  ]
 }
 
 # kafka EC2
@@ -107,9 +111,19 @@ resource "aws_instance" "python_ec2" {
   key_name                    = var.key_name
   associate_public_ip_address = false
 
+  root_block_device {
+    volume_size = 30                # 디스크 용량 (GB)
+    volume_type = "gp3"            # 최신 SSD (gp3 권장)
+    delete_on_termination = true   # 인스턴스 삭제 시 볼륨도 삭제
+  }
+
   tags = {
     Name = "${var.project_name}_python"
   }
+}
+
+data "aws_iam_instance_profile" "elk" {
+  name = "coubee-infra-elk-role"
 }
 
 #ELK EC2
@@ -126,24 +140,83 @@ resource "aws_instance" "elk_ec2"{
     delete_on_termination = true   # 인스턴스 삭제 시 볼륨도 삭제
   }
 
+  iam_instance_profile = data.aws_iam_instance_profile.elk.name
+
   #EC2 초기설정 (cloud-init)
-  user_data = <<EOF
-#!/bin/bash
-set -euxo pipefail
-apt-get update -y
-apt-get install -y docker.io
-systemctl enable --now docker
-usermod -aG docker ubuntu
-
-# docker compose v2 설치 (경로 먼저 생성!)
-mkdir -p /usr/local/lib/docker/cli-plugins
-curl -L "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-$(uname -s)-$(uname -m)" \
-  -o /usr/local/lib/docker/cli-plugins/docker-compose
-chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-EOF
-
+  user_data = file("elk_setup.sh")
+  depends_on = [                                 #네트워크 설정이 먼저 되어있어야 private망에 있는 ec2접근이 가능해져서 kafka 설치됨
+    aws_nat_gateway.nat_a,
+    aws_route_table_association.private2_assoc
+  ]
 
   tags = {
     Name = "${var.project_name}_elk"
   }
+}
+
+
+resource "aws_lb" "kafka_nlb" {
+  name = "kafka-nlb"
+  internal = true
+  load_balancer_type = "network"
+  ip_address_type = "ipv4"
+
+  subnets = [aws_subnet.private1.id]
+  security_groups = [aws_security_group.kafka_sg.id]
+
+  tags = {
+    Name = "kafka-nlb"
+  }
+}
+
+resource "aws_lb_target_group" "kafka_tg" {
+  name        = "kafka-tg"
+  port        = 9092              # 기본 포트 (attachment에서 override)
+  protocol    = "TCP"
+  vpc_id      = aws_vpc.coubee.id
+  target_type = "instance"
+
+  health_check {
+    protocol = "TCP"
+    port     = "9092"             # 대표 포트 기준으로 헬스체크
+    interval = 10
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+
+  tags = {
+    Name = "kafka-tg"
+  }
+}
+
+resource "aws_lb_listener" "tcp_9092" {
+  load_balancer_arn = aws_lb.kafka_nlb.arn
+  port              = 9092
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.kafka_tg.arn
+  }
+}
+
+# 9092
+resource "aws_lb_target_group_attachment" "kafka_9092" {
+  target_group_arn = aws_lb_target_group.kafka_tg.arn
+  target_id        = aws_instance.kafka.id
+  port             = 9092
+}
+
+# 9093
+resource "aws_lb_target_group_attachment" "kafka_9093" {
+  target_group_arn = aws_lb_target_group.kafka_tg.arn
+  target_id        = aws_instance.kafka.id
+  port             = 9093
+}
+
+# 9094
+resource "aws_lb_target_group_attachment" "kafka_9094" {
+  target_group_arn = aws_lb_target_group.kafka_tg.arn
+  target_id        = aws_instance.kafka.id
+  port             = 9094
 }

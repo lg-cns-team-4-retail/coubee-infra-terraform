@@ -116,6 +116,14 @@ resource "aws_security_group" "eks_cluster_sg" {
   name        = "${var.project_name}_eks_cluster_sg"
   description = "EKS Cluster security group"
   vpc_id      = aws_vpc.coubee.id
+
+  ingress {
+    from_port   = 0
+    to_port     = 9100
+    protocol    = "tcp"
+    self        = true
+  }
+
 }
 
 # EKS Node SG
@@ -331,6 +339,13 @@ resource "aws_security_group" "monitoring_sg" {
     cidr_blocks     = ["10.0.0.0/16"]
   }
 
+  ingress {
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    cidr_blocks     = ["10.0.0.0/16"]
+  }
+
   egress {
     from_port       = 0
     to_port         = 0
@@ -397,6 +412,13 @@ resource "aws_security_group" "python-ec2-sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    from_port = 8089
+    to_port = 8089
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -458,6 +480,13 @@ resource "aws_security_group" "elk_sg" {
   name = "elk_sg"
   description = "Allow SSH and Docker testing"
   vpc_id = aws_vpc.coubee.id
+
+  ingress {
+    from_port = 9200
+    to_port = 9200
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   ingress {
     from_port = 22
