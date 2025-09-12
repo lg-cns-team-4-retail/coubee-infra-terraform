@@ -31,19 +31,19 @@
 **********
 1. terraform 프로젝트 초기화
    
-    terraform init
+    ```terraform init```
 
 
 3. 리소스 생성 계획
    
-    terraform plan
+    ```terraform plan```
 
 
 5. 리소스 생성
    
-    terraform apply
+    ```terraform apply```
 
 
 7. 리소스 삭제
    
-    terraform destory
+    ```terraform destory```
