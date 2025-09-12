@@ -30,16 +30,20 @@
 ### 시작
 **********
 1. terraform 프로젝트 초기화
+   
     terraform init
 
 
-2. 리소스 생성 계획
+3. 리소스 생성 계획
+   
     terraform plan
 
 
-3. 리소스 생성
+5. 리소스 생성
+   
     terraform apply
 
 
-4. 리소스 삭제
+7. 리소스 삭제
+   
     terraform destory
