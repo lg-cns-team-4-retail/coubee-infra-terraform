@@ -15,15 +15,35 @@
 ### 자동화된 리소스
 ***********
 ● VPC
+
+
 ● Bastion
+
+
 ● ELB
+
+
 ● Jenkins
+
+
 ● Lambda
+
+
 ● Kafka
+
+
 ● ECR
+
+
 ● ElasticCache for Valkey
+
+
 ● RDS for PostgreSQL
+
+
 ● EventBridge
+
+
 ● EC2 (Python)
 
 
